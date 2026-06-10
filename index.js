@@ -9,7 +9,7 @@ const {
   TextInputBuilder,
   TextInputStyle,
 } = require('discord.js');
-
+const fs = require('fs');
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
@@ -20,7 +20,15 @@ const client = new Client({
 
 // ===================== DATABASE (in-memory) =====================
 const users = {};
+let couples = {};
 
+if (fs.existsSync('./couples.json')) {
+  couples = JSON.parse(fs.readFileSync('./couples.json', 'utf8'));
+}
+
+function saveCouples() {
+  fs.writeFileSync('./couples.json', JSON.stringify(couples, null, 2));
+}
 function getUser(userId) {
   if (!users[userId]) users[userId] = { gold: 1000, lastDaily: null };
   return users[userId];
