@@ -364,4 +364,4 @@ client.once('ready', () => {
 });
 
 // THAY TOKEN CỦA BẠN VÀO ĐÂY
-client.login('process.env.TOKEN');
+client.login(process.env.TOKEN);
