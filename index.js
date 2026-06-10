@@ -346,7 +346,80 @@ client.on('messageCreate', async (message) => {
   // !balance
   if (cmd === '!balance' || cmd === '!gold') {
     return message.reply(`💰 **HOD** | Số dư của <@${userId}>: **${formatGold(user.gold)} gold** 🪙`);
-  }
+    }
+
+  // ===================== LOVE SYSTEM =====================
+
+if (cmd === '!love') {
+  const target = message.mentions.users.first();
+
+  if (!target)
+    return message.reply('❌ Dùng: !love @user');
+
+  const percent = Math.floor(Math.random() * 101);
+
+  const bar =
+    '🩷'.repeat(Math.floor(percent / 10)) +
+    '⬜'.repeat(10 - Math.floor(percent / 10));
+
+  const embed = new EmbedBuilder()
+    .setColor('#ff4d88')
+    .setTitle('💘 HOD Love Machine')
+    .setDescription(
+      `❤️ ${message.author} × ${target}\n\n` +
+      `📊 Mức độ tình yêu: **${percent}%**\n${bar}`
+    );
+
+  return message.reply({ embeds: [embed] });
+}
+
+if (cmd === '!marry') {
+  const target = message.mentions.users.first();
+
+  if (!target)
+    return message.reply('❌ Dùng: !marry @user');
+
+  if (couples[userId])
+    return message.reply('💍 Bạn đã kết hôn rồi!');
+
+  if (couples[target.id])
+    return message.reply('💍 Người đó đã kết hôn rồi!');
+
+  couples[userId] = target.id;
+  couples[target.id] = userId;
+
+  saveCouples();
+
+  return message.reply(
+    `💍 Chúc mừng ${message.author} và ${target} đã kết hôn! ❤️`
+  );
+}
+
+if (cmd === '!partner') {
+  const partnerId = couples[userId];
+
+  if (!partnerId)
+    return message.reply('💔 Bạn chưa kết hôn.');
+
+  return message.reply(`💕 Người yêu của bạn là <@${partnerId}>`);
+}
+
+if (cmd === '!divorce') {
+  const partnerId = couples[userId];
+
+  if (!partnerId)
+    return message.reply('💔 Bạn chưa kết hôn.');
+
+  delete couples[userId];
+  delete couples[partnerId];
+
+  saveCouples();
+
+  return message.reply('💔 Hai người đã ly hôn.');
+}
+  // !help
+  
+if (cmd === '!help'){
 
   // !help
   if (cmd === '!help') {
