@@ -8,27 +8,22 @@ const {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  ChannelType,
+  PermissionFlagsBits,
 } = require('discord.js');
-const fs = require('fs');
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMembers,
   ],
 });
 
 // ===================== DATABASE (in-memory) =====================
 const users = {};
-let couples = {};
 
-if (fs.existsSync('./couples.json')) {
-  couples = JSON.parse(fs.readFileSync('./couples.json', 'utf8'));
-}
-
-function saveCouples() {
-  fs.writeFileSync('./couples.json', JSON.stringify(couples, null, 2));
-}
 function getUser(userId) {
   if (!users[userId]) users[userId] = { gold: 1000, lastDaily: null };
   return users[userId];
@@ -48,6 +43,15 @@ let gameMessage = null;
 
 // ===================== DICE EMOJI =====================
 const diceEmoji = ['', '⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
+
+// ===================== TICKET CONFIG =====================
+const TICKET_CHANNEL_ID = '1513584728467312721';
+const TICKET_ROLES = [
+  '1513422411452780664',
+  '1513567927260020947',
+  '1513568819434487888',
+  '1513570316754878766',
+];
 
 // ===================== UTILS =====================
 function rollDice() {
@@ -198,14 +202,52 @@ async function endGame() {
   gameChannel = null;
 }
 
-// ===================== INTERACTIONS (Button + Modal) =====================
+// ===================== INTERACTIONS =====================
 client.on('interactionCreate', async (interaction) => {
 
-  // BUTTON
+  // ── BUTTON ──
   if (interaction.isButton()) {
     const userId = interaction.user.id;
     const id = interaction.customId;
 
+    // Nút tạo ticket (member bấm)
+    if (id === 'create_ticket') {
+      const modal = new ModalBuilder()
+        .setCustomId('ticket_modal')
+        .setTitle('🎫 Tạo Yêu Cầu Hỗ Trợ');
+
+      const reasonInput = new TextInputBuilder()
+        .setCustomId('ticket_reason')
+        .setLabel('Lý do cần hỗ trợ')
+        .setStyle(TextInputStyle.Paragraph)
+        .setPlaceholder('Nhập lý do bạn cần hỗ trợ...')
+        .setRequired(true)
+        .setMinLength(5)
+        .setMaxLength(500);
+
+      modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
+      return interaction.showModal(modal);
+    }
+
+    // Nút đóng ticket
+    if (id === 'close_ticket') {
+      const channel = interaction.channel;
+      const isStaff = interaction.member.roles.cache.some(r => TICKET_ROLES.includes(r.id));
+      const isCreator = channel.topic === `ticket-${interaction.user.id}`;
+
+      if (!isStaff && !isCreator) {
+        return interaction.reply({
+          content: '⚠️ Bạn không có quyền đóng ticket này!',
+          ephemeral: true,
+        });
+      }
+
+      await interaction.reply({ content: '🔒 Đang đóng ticket sau 3 giây...' });
+      setTimeout(() => channel.delete().catch(() => {}), 3000);
+      return;
+    }
+
+    // Nút cược tài xỉu
     if (!gameActive) {
       return interaction.reply({
         content: '⚠️ Không có ván chơi nào đang diễn ra. Dùng `!taixiu` để bắt đầu!',
@@ -253,11 +295,82 @@ client.on('interactionCreate', async (interaction) => {
     return interaction.showModal(modal);
   }
 
-  // MODAL SUBMIT
+  // ── MODAL SUBMIT ──
   if (interaction.isModalSubmit()) {
     const userId = interaction.user.id;
-    const user = getUser(userId);
     const id = interaction.customId;
+
+    // Modal tạo ticket
+    if (id === 'ticket_modal') {
+      const reason = interaction.fields.getTextInputValue('ticket_reason');
+      const guild = interaction.guild;
+      const user = interaction.user;
+
+      // Kiểm tra đã có ticket chưa
+      const existing = guild.channels.cache.find(c => c.topic === `ticket-${user.id}`);
+      if (existing) {
+        return interaction.reply({
+          content: `⚠️ Bạn đã có ticket rồi! <#${existing.id}>`,
+          ephemeral: true,
+        });
+      }
+
+      // Tạo permission
+      const permissionOverwrites = [
+        {
+          id: guild.roles.everyone.id,
+          deny: [PermissionFlagsBits.ViewChannel],
+        },
+        {
+          id: user.id,
+          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory],
+        },
+        ...TICKET_ROLES.map(roleId => ({
+          id: roleId,
+          allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages, PermissionFlagsBits.ReadMessageHistory, PermissionFlagsBits.ManageMessages],
+        })),
+      ];
+
+      // Tạo kênh ticket
+      const safeName = user.username.toLowerCase().replace(/[^a-z0-9]/g, '') || user.id;
+      const ticketChannel = await guild.channels.create({
+        name: `ticket-${safeName}`,
+        type: ChannelType.GuildText,
+        topic: `ticket-${user.id}`,
+        permissionOverwrites,
+      });
+
+      const ticketEmbed = new EmbedBuilder()
+        .setColor('#e74c3c')
+        .setTitle(`🎫 Ticket của ${user.username}`)
+        .addFields(
+          { name: '👤 Người tạo', value: `<@${user.id}>`, inline: true },
+          { name: '📋 Lý do', value: reason, inline: false },
+        )
+        .setFooter({ text: 'HOD Support – Bấm nút Đóng Ticket khi xong!' })
+        .setTimestamp();
+
+      const closeRow = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId('close_ticket')
+          .setLabel('🔒 Đóng Ticket')
+          .setStyle(ButtonStyle.Danger)
+      );
+
+      await ticketChannel.send({
+        content: `<@${user.id}> ${TICKET_ROLES.map(r => `<@&${r}>`).join(' ')}`,
+        embeds: [ticketEmbed],
+        components: [closeRow],
+      });
+
+      return interaction.reply({
+        content: `✅ Ticket đã được tạo! <#${ticketChannel.id}>`,
+        ephemeral: true,
+      });
+    }
+
+    // Modal cược tài xỉu
+    const user = getUser(userId);
 
     if (!gameActive) {
       return interaction.reply({ content: '⚠️ Ván chơi đã kết thúc rồi!', ephemeral: true });
@@ -275,7 +388,7 @@ client.on('interactionCreate', async (interaction) => {
     const amount = parseInt(rawAmount);
 
     if (isNaN(amount) || amount < 1) {
-      return interaction.reply({ content: '⚠️ Số gold không hợp lệ! Nhập số nguyên dương.', ephemeral: true });
+      return interaction.reply({ content: '⚠️ Số gold không hợp lệ!', ephemeral: true });
     }
     if (amount > 250000) {
       return interaction.reply({ content: '⚠️ Tối đa **250,000 gold** mỗi lần cược!', ephemeral: true });
@@ -288,7 +401,6 @@ client.on('interactionCreate', async (interaction) => {
     }
 
     bets[userId] = { type: betType, number: betNumber, amount };
-
     const label = betType === 'so' ? `Số ${betNumber}` : betType.toUpperCase();
     return interaction.reply({
       content: `✅ Đã đặt cược **${formatGold(amount)} gold** vào **${label}**! Chúc may mắn 🎲`,
@@ -307,6 +419,7 @@ client.on('messageCreate', async (message) => {
   const cmd = args[0].toLowerCase();
   const userId = message.author.id;
   const user = getUser(userId);
+  const isStaff = message.member?.roles.cache.some(r => TICKET_ROLES.includes(r.id));
 
   // !taixiu
   if (cmd === '!taixiu') {
@@ -346,92 +459,46 @@ client.on('messageCreate', async (message) => {
   // !balance
   if (cmd === '!balance' || cmd === '!gold') {
     return message.reply(`💰 **HOD** | Số dư của <@${userId}>: **${formatGold(user.gold)} gold** 🪙`);
-    }
+  }
 
-  // ===================== LOVE SYSTEM =====================
+  // !ticket - chỉ staff mới dùng được (setup panel)
+  if (cmd === '!ticket') {
+    if (!isStaff) return message.reply('⚠️ Bạn không có quyền dùng lệnh này!');
 
-if (cmd === '!love') {
-  const target = message.mentions.users.first();
+    const embed = new EmbedBuilder()
+      .setColor('#e74c3c')
+      .setTitle('🎫 Hệ Thống Hỗ Trợ HOD')
+      .setDescription(
+        `Chào mừng bạn đến với kênh hỗ trợ!\n\n` +
+        `Bấm nút bên dưới để tạo yêu cầu hỗ trợ.\n` +
+        `Staff sẽ hỗ trợ bạn sớm nhất có thể! 🔥`
+      )
+      .setFooter({ text: 'HOD – Nhà cái đến từ Châu Á! 🔥' });
 
-  if (!target)
-    return message.reply('❌ Dùng: !love @user');
-
-  const percent = Math.floor(Math.random() * 101);
-
-  const bar =
-    '🩷'.repeat(Math.floor(percent / 10)) +
-    '⬜'.repeat(10 - Math.floor(percent / 10));
-
-  const embed = new EmbedBuilder()
-    .setColor('#ff4d88')
-    .setTitle('💘 HOD Love Machine')
-    .setDescription(
-      `❤️ ${message.author} × ${target}\n\n` +
-      `📊 Mức độ tình yêu: **${percent}%**\n${bar}`
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId('create_ticket')
+        .setLabel('+ Tạo yêu cầu mới')
+        .setStyle(ButtonStyle.Danger)
     );
 
-  return message.reply({ embeds: [embed] });
-}
-
-if (cmd === '!marry') {
-  const target = message.mentions.users.first();
-
-  if (!target)
-    return message.reply('❌ Dùng: !marry @user');
-
-  if (couples[userId])
-    return message.reply('💍 Bạn đã kết hôn rồi!');
-
-  if (couples[target.id])
-    return message.reply('💍 Người đó đã kết hôn rồi!');
-
-  couples[userId] = target.id;
-  couples[target.id] = userId;
-
-  saveCouples();
-
-  return message.reply(
-    `💍 Chúc mừng ${message.author} và ${target} đã kết hôn! ❤️`
-  );
-}
-
-if (cmd === '!partner') {
-  const partnerId = couples[userId];
-
-  if (!partnerId)
-    return message.reply('💔 Bạn chưa kết hôn.');
-
-  return message.reply(`💕 Người yêu của bạn là <@${partnerId}>`);
-}
-
-if (cmd === '!divorce') {
-  const partnerId = couples[userId];
-
-  if (!partnerId)
-    return message.reply('💔 Bạn chưa kết hôn.');
-
-  delete couples[userId];
-  delete couples[partnerId];
-
-  saveCouples();
-
-  return message.reply('💔 Hai người đã ly hôn.');
-}
-  // !help
-  
-if (cmd === '!help'){
+    await message.channel.send({ embeds: [embed], components: [row] });
+    await message.delete().catch(() => {});
+    return;
+  }
 
   // !help
   if (cmd === '!help') {
     const embed = new EmbedBuilder()
       .setColor('#6c5ce7')
-      .setTitle('📖 HOD | Hướng Dẫn Bot Tài Xỉu')
-      .setDescription('Chào mừng đến với **Tài Xỉu HOD** – Nhà cái đến từ Châu Á! 🔥')
+      .setTitle('📖 HOD | Hướng Dẫn Bot')
+      .setDescription('Chào mừng đến với **HOD** – Nhà cái đến từ Châu Á! 🔥')
       .addFields(
         { name: '🎲 !taixiu', value: 'Bắt đầu ván chơi mới (45 giây)', inline: false },
         { name: '🔘 Bấm nút chọn loại cược', value: 'Bảng nhập gold sẽ tự hiện ra sau khi bấm', inline: false },
         { name: '🎁 !daily', value: 'Nhận 500 gold miễn phí mỗi ngày (24h/lần)', inline: false },
         { name: '💰 !balance', value: 'Xem số gold hiện tại của bạn', inline: false },
+        { name: '🎫 !ticket', value: 'Setup panel ticket (chỉ Staff)', inline: false },
         { name: '📊 Tỉ lệ thưởng', value: '• Tài/Xỉu/Chẵn/Lẻ: **1:1**\n• Số cụ thể: **1:10**', inline: false },
       )
       .setFooter({ text: 'HOD – Nhà cái đến từ Châu Á! 🔥' });
@@ -444,5 +511,4 @@ client.once('ready', () => {
   console.log(`✅ HOD Bot đã online: ${client.user.tag}`);
 });
 
-// THAY TOKEN CỦA BẠN VÀO ĐÂY
 client.login(process.env.TOKEN);
